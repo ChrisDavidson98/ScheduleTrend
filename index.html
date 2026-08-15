@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Schedule Trend" />
+<title>Schedule Trend</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #08090a; -webkit-tap-highlight-color: transparent; }
+  input, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #08090a; } ::-webkit-scrollbar-thumb { background: #232a38; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root">Loading…</div>
+
+<script>
+window.addEventListener("error", function (e) {
+  var root = document.getElementById("root");
+  if (root) {
+    root.innerHTML =
+      '<div style="font-family:monospace;padding:20px;color:#f87171;background:#0f131b;white-space:pre-wrap;">' +
+      "SCRIPT ERROR:\n" + (e.message || e) + "\n\nFile: " + (e.filename || "?") + " Line: " + (e.lineno || "?") +
+      "</div>";
+  }
+});
+</script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js" crossorigin></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ════════════════════════════════════════════════════════════════
+// CONFIGURE — paste your Schedule Trend Apps Script Web app URL and
+// APP_TOKEN below. This is a DIFFERENT token than Scope Deviation's —
+// keep tools on separate tokens so a leak in one doesn't touch the other.
+// ════════════════════════════════════════════════════════════════
+const SCRIPT_URL = 'PASTE_YOUR_SCHEDULE_TREND_SCRIPT_URL_HERE';
+const APP_TOKEN = 'PASTE_YOUR_SCHEDULE_TREND_TOKEN_HERE';
+// ════════════════════════════════════════════════════════════════
+
+const STAGE_ORDER = [
+  'Paint Ready', "Trimm'd", 'Trim Rdy', 'Trim Ready-HOLD', 'Triming',
+  'Hung', 'Batts', 'RI Inspect', 'ReRI Inspect', 'E-Mech', 'M-Mech', 'Roof',
+];
+
+const STAGE_COLOR = (stage) => {
+  const i = STAGE_ORDER.indexOf(stage);
+  if (i === -1) return '#6b7280';
+  // Furthest-along stages read warm/complete, earliest stages read cool/early.
+  const t = i / (STAGE_ORDER.length - 1);
+  const r = Math.round(96 + t * (250 - 96));
+  const g = Math.round(165 - t * (85));
+  const b = Math.round(250 - t * (200));
+  return `rgb(${r},${g},${b})`;
+};
+
+function fmtDate(d) {
+  if (!d) return null;
+  try { return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+  catch (e) { return d; }
+}
+
+async function callBackendGet(action, params) {
+  const url = new URL(SCRIPT_URL);
+  url.searchParams.set('token', APP_TOKEN);
+  url.searchParams.set('action', action);
+  Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url.toString());
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+async function callBackendPost(action, payload) {
+  const res = await fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, token: APP_TOKEN, ...payload }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ── Stage pipeline bar — the one signature visual: shows how the current
+// snapshot's houses are distributed across the build pipeline at a glance ──
+function StagePipeline({ houses }) {
+  const counts = {};
+  STAGE_ORDER.forEach((s) => (counts[s] = 0));
+  houses.forEach((h) => { if (counts[h.stage] !== undefined) counts[h.stage]++; else counts[h.stage] = (counts[h.stage] || 0) + 1; });
+  const max = Math.max(1, ...Object.values(counts));
+  const stages = [...STAGE_ORDER, ...Object.keys(counts).filter((s) => !STAGE_ORDER.includes(s))];
+  return (
+    <div style={S.pipeline}>
+      {stages.map((s) => {
+        const n = counts[s] || 0;
+        return (
+          <div key={s} style={S.pipeCol}>
+            <div style={S.pipeBarTrack}>
+              <div style={{ ...S.pipeBar, height: `${(n / max) * 100}%`, background: STAGE_COLOR(s) }} />
+            </div>
+            <div style={S.pipeCount}>{n}</div>
+            <div style={S.pipeLabel}>{s}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DropZone({ onFile, busy }) {
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef(null);
+
+  const handleFiles = (files) => {
+    const file = files && files[0];
+    if (file && file.type === 'application/pdf') onFile(file);
+  };
+
+  return (
+    <div
+      style={{ ...S.drop, ...(dragging ? S.dropActive : {}), ...(busy ? S.dropBusy : {}) }}
+      onDragOver={(e) => { e.preventDefault(); if (!busy) setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => { e.preventDefault(); setDragging(false); if (!busy) handleFiles(e.dataTransfer.files); }}
+      onClick={() => !busy && inputRef.current && inputRef.current.click()}
+    >
+      <input ref={inputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+        onChange={(e) => handleFiles(e.target.files)} />
+      <div style={S.dropIcon}>{busy ? '···' : '⇩'}</div>
+      <div style={S.dropTitle}>{busy ? 'Reading the schedule…' : 'Drop this week\u2019s schedule PDF'}</div>
+      <div style={S.dropSub}>{busy ? 'This can take a few seconds' : 'or tap to browse — one page at a time'}</div>
+    </div>
+  );
+}
+
+function ReviewScreen({ parsed, onSave, onDiscard, saving }) {
+  const [weekDate, setWeekDate] = useState(parsed.weekDate || '');
+  return (
+    <div>
+      <div style={S.ph}>
+        <h1 style={S.pt}>Review before saving</h1>
+        <div style={S.dc}>{parsed.houses.length} houses</div>
+      </div>
+
+      <div style={S.fGrp}>
+        <label style={S.fLbl}>SCHEDULE DATE (read from the PDF — check it)</label>
+        <input style={S.tIn} type="date" value={weekDate} onChange={(e) => setWeekDate(e.target.value)} />
+      </div>
+
+      <div style={{ marginTop: 20, marginBottom: 24 }}>
+        <StagePipeline houses={parsed.houses} />
+      </div>
+
+      <div style={S.secLbl}>HOUSES</div>
+      <div style={S.tableWrap}>
+        <table style={S.table}>
+          <thead>
+            <tr>
+              {['Address', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor', 'Notes'].map((h) => (
+                <th key={h} style={S.th}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {parsed.houses.map((h, i) => (
+              <tr key={i} style={S.tr}>
+                <td style={S.td}>{h.address}{h.note && <div style={S.tdSub}>{h.note}</div>}</td>
+                <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
+                <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
+                <td style={S.td}>{fmtDate(h.matlArrivalDate) || '—'}</td>
+                <td style={S.td}>{h.matl || '—'}</td>
+                <td style={S.td}>{h.labor || '—'}</td>
+                <td style={S.tdNotes}>{h.notes || ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={S.reviewActions}>
+        <button style={S.gBtn} onClick={onDiscard} disabled={saving}>DISCARD</button>
+        <button style={{ ...S.pBtn, opacity: weekDate ? 1 : 0.4 }} onClick={() => weekDate && onSave(weekDate, parsed.houses)} disabled={saving || !weekDate}>
+          {saving ? 'SAVING…' : `SAVE ${parsed.houses.length} HOUSES`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WeeksList({ weeks, onOpen, loading }) {
+  if (loading) return <div style={S.emptyState}>Loading past weeks…</div>;
+  if (!weeks.length) return <div style={S.emptyState}>No weeks saved yet. Upload one above to get started.</div>;
+  return (
+    <div style={S.stack}>
+      {weeks.map((w) => (
+        <div key={w} style={S.weekRow} onClick={() => onOpen(w)}>
+          <span style={S.weekDate}>{fmtDate(w) || w}</span>
+          <span style={S.weekArrow}>→</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WeekDetail({ weekDate, houses, onBack }) {
+  return (
+    <div>
+      <div style={S.ph}>
+        <button style={S.gBtn} onClick={onBack}>← ALL WEEKS</button>
+        <h1 style={S.pt}>{fmtDate(weekDate) || weekDate}</h1>
+      </div>
+      <div style={{ marginBottom: 24 }}>
+        <StagePipeline houses={houses} />
+      </div>
+      <div style={S.tableWrap}>
+        <table style={S.table}>
+          <thead>
+            <tr>{['Address', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {houses.map((h, i) => (
+              <tr key={i} style={S.tr}>
+                <td style={S.td}>{h.address}</td>
+                <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
+                <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
+                <td style={S.td}>{fmtDate(h.matlArrivalDate) || '—'}</td>
+                <td style={S.td}>{h.matl || '—'}</td>
+                <td style={S.td}>{h.labor || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [view, setView] = useState('upload'); // upload | review | weeks | weekDetail
+  const [parsed, setParsed] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [weeks, setWeeks] = useState([]);
+  const [weeksLoading, setWeeksLoading] = useState(false);
+  const [activeWeek, setActiveWeek] = useState(null);
+  const [activeWeekHouses, setActiveWeekHouses] = useState([]);
+
+  const configured = SCRIPT_URL.indexOf('PASTE_') !== 0 && APP_TOKEN.indexOf('PASTE_') !== 0;
+
+  const loadWeeks = async () => {
+    setWeeksLoading(true);
+    try {
+      const result = await callBackendGet('listWeeks');
+      setWeeks(result || []);
+    } catch (e) { /* silent on the tab switch — user hasn't asked for it yet */ }
+    setWeeksLoading(false);
+  };
+
+  useEffect(() => { if (configured) loadWeeks(); }, []);
+
+  const handleFile = async (file) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const base64 = await fileToBase64(file);
+      const result = await callBackendPost('parseWeek', { pdfBase64: base64 });
+      setParsed(result);
+      setView('review');
+    } catch (e) {
+      setError(e.message || 'Something went wrong parsing that file.');
+    }
+    setBusy(false);
+  };
+
+  const handleSave = async (weekDate, houses) => {
+    setSaving(true);
+    try {
+      const result = await callBackendPost('saveWeek', { weekDate, houses });
+      setToast(`Saved ${result.saved} houses for ${fmtDate(weekDate) || weekDate}.`);
+      setTimeout(() => setToast(null), 4000);
+      setParsed(null);
+      setView('upload');
+      loadWeeks();
+    } catch (e) {
+      setError(e.message || 'Save failed.');
+    }
+    setSaving(false);
+  };
+
+  const openWeek = async (weekDate) => {
+    setActiveWeek(weekDate);
+    setView('weekDetail');
+    try {
+      const houses = await callBackendGet('getWeek', { weekDate });
+      setActiveWeekHouses(houses || []);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  if (!configured) {
+    return (
+      <div style={S.app}>
+        <div style={S.body}>
+          <div style={S.banner}>
+            ⚙ Open <strong>schedule-trend.html</strong> and set <code>SCRIPT_URL</code> and <code>APP_TOKEN</code> at the top of the script before using this.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.app}>
+      <div style={S.header}>
+        <div style={S.logo}>SCHEDULE TREND</div>
+        <div style={S.nav}>
+          <button style={{ ...S.navBtn, ...(view === 'upload' || view === 'review' ? S.navActive : {}) }} onClick={() => { setView('upload'); setParsed(null); }}>UPLOAD</button>
+          <button style={{ ...S.navBtn, ...(view === 'weeks' || view === 'weekDetail' ? S.navActive : {}) }} onClick={() => { setView('weeks'); loadWeeks(); }}>WEEKS</button>
+        </div>
+      </div>
+
+      {toast && <div style={S.toast}>{toast}</div>}
+
+      <div style={S.body}>
+        {error && <div style={S.errorBox}>{error} <span style={S.errorDismiss} onClick={() => setError(null)}>✕</span></div>}
+
+        {view === 'upload' && <DropZone onFile={handleFile} busy={busy} />}
+
+        {view === 'review' && parsed && (
+          <ReviewScreen parsed={parsed} saving={saving}
+            onSave={handleSave}
+            onDiscard={() => { setParsed(null); setView('upload'); }} />
+        )}
+
+        {view === 'weeks' && <WeeksList weeks={weeks} loading={weeksLoading} onOpen={openWeek} />}
+
+        {view === 'weekDetail' && <WeekDetail weekDate={activeWeek} houses={activeWeekHouses} onBack={() => setView('weeks')} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Styles — matches BuildTrack's existing dark theme ──────────────
+const S = {
+  app: { minHeight: '100vh', backgroundColor: '#08090a', color: '#e5e7eb', fontFamily: "'DM Mono','Courier New',monospace" },
+  header: { backgroundColor: '#0f131b', borderBottom: '2px solid #1c2230', padding: '13px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 100 },
+  logo: { fontFamily: "'DM Mono',monospace", fontSize: 14, fontWeight: 500, color: '#8f97a3', letterSpacing: '0.15em' },
+  nav: { display: 'flex', gap: 4 },
+  navBtn: { background: 'none', border: '1px solid #232a38', color: '#6b7280', padding: '6px 12px', borderRadius: 4, fontSize: 10, letterSpacing: '0.08em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  navActive: { borderColor: '#5c7a99', color: '#5c7a99', backgroundColor: 'rgba(92,122,153,0.1)' },
+  body: { padding: '20px 16px 60px', maxWidth: 900, margin: '0 auto' },
+  ph: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12, flexWrap: 'wrap' },
+  pt: { fontFamily: "'Barlow Condensed',sans-serif", fontSize: 24, fontWeight: 700, color: '#f3f4f6', letterSpacing: '0.03em', margin: 0 },
+  dc: { fontSize: 12, color: '#5c7a99', letterSpacing: '0.05em' },
+
+  drop: { border: '2px dashed #232a38', borderRadius: 10, padding: '56px 20px', textAlign: 'center', cursor: 'pointer', transition: 'border-color 0.15s, background 0.15s', marginTop: 20 },
+  dropActive: { borderColor: '#5c7a99', backgroundColor: 'rgba(92,122,153,0.06)' },
+  dropBusy: { borderColor: '#5c7a99', cursor: 'default', opacity: 0.7 },
+  dropIcon: { fontSize: 30, color: '#5c7a99', marginBottom: 10 },
+  dropTitle: { fontSize: 15, color: '#e5e7eb', fontWeight: 500, marginBottom: 4 },
+  dropSub: { fontSize: 11, color: '#6b7280', letterSpacing: '0.04em' },
+
+  banner: { backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: '#fbbf24', marginBottom: 16, lineHeight: 1.6 },
+  errorBox: { backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 6, padding: '10px 14px', fontSize: 12, marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 10 },
+  errorDismiss: { cursor: 'pointer', opacity: 0.7 },
+  toast: { backgroundColor: 'rgba(34,197,94,0.1)', color: '#4ade80', textAlign: 'center', padding: '8px 16px', fontSize: 11, letterSpacing: '0.05em' },
+
+  fGrp: { maxWidth: 220 },
+  fLbl: { fontSize: 9, color: '#6b7280', letterSpacing: '0.1em', display: 'block', marginBottom: 4 },
+  tIn: { backgroundColor: '#0f131b', border: '1px solid #232a38', borderRadius: 6, color: '#f3f4f6', padding: '9px 12px', fontSize: 13, fontFamily: "'DM Mono',monospace", width: '100%', boxSizing: 'border-box', colorScheme: 'dark' },
+
+  secLbl: { fontSize: 10, color: '#6b7280', letterSpacing: '0.15em', marginBottom: 10, fontWeight: 700 },
+
+  pipeline: { display: 'flex', gap: 4, alignItems: 'flex-end', height: 140, backgroundColor: '#0f131b', border: '1px solid #1c2230', borderRadius: 8, padding: '14px 10px 8px', overflowX: 'auto' },
+  pipeCol: { display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 46, flex: 1 },
+  pipeBarTrack: { height: 70, width: 14, display: 'flex', alignItems: 'flex-end', backgroundColor: '#151b26', borderRadius: 3, overflow: 'hidden' },
+  pipeBar: { width: '100%', borderRadius: 3, minHeight: 2, transition: 'height 0.3s' },
+  pipeCount: { fontSize: 12, fontWeight: 700, color: '#e5e7eb', marginTop: 6 },
+  pipeLabel: { fontSize: 8, color: '#6b7280', textAlign: 'center', marginTop: 3, letterSpacing: '0.02em', lineHeight: 1.2, maxWidth: 46 },
+
+  tableWrap: { overflowX: 'auto', border: '1px solid #1c2230', borderRadius: 8, backgroundColor: '#0f131b' },
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 12 },
+  th: { textAlign: 'left', padding: '10px 12px', fontSize: 9, letterSpacing: '0.08em', color: '#6b7280', borderBottom: '1px solid #1c2230', whiteSpace: 'nowrap' },
+  tr: { borderBottom: '1px solid #151b26' },
+  td: { padding: '9px 12px', color: '#d1d5db', whiteSpace: 'nowrap' },
+  tdSub: { fontSize: 10, color: '#6b7280', marginTop: 2 },
+  tdNotes: { padding: '9px 12px', color: '#9ca3af', fontSize: 11, whiteSpace: 'normal', minWidth: 140 },
+  stagePill: { fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 8px', borderRadius: 3, border: '1px solid', whiteSpace: 'nowrap' },
+
+  reviewActions: { display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 },
+  pBtn: { backgroundColor: '#5c7a99', color: '#08090a', border: 'none', padding: '10px 20px', borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  gBtn: { background: 'none', border: '1px solid #232a38', color: '#9ca3af', padding: '10px 16px', borderRadius: 4, fontSize: 11, letterSpacing: '0.08em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+
+  stack: { display: 'flex', flexDirection: 'column', gap: 8 },
+  weekRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0f131b', border: '1px solid #1c2230', borderRadius: 8, padding: '14px 16px', cursor: 'pointer' },
+  weekDate: { fontSize: 14, color: '#f3f4f6', fontWeight: 500 },
+  weekArrow: { color: '#5c7a99' },
+  emptyState: { textAlign: 'center', padding: '50px 20px', color: '#4b5563', fontSize: 13 },
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
