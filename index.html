@@ -266,12 +266,13 @@ function WeekDetail({ weekDate, houses, onBack }) {
       <div style={S.tableWrap}>
         <table style={S.table}>
           <thead>
-            <tr>{['Address', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor', 'Notes'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
+            <tr>{['Address', 'Subdivision', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor', 'Notes'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {houses.map((h, i) => (
               <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
                 <td style={S.td}>{h.address}</td>
+                <td style={S.td}>{h.subdivision || <span style={{ opacity: 0.35 }}>—</span>}</td>
                 <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
                 <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
                 <td style={S.td}>{fmtDate(h.matlArrivalDate) || '—'}</td>
