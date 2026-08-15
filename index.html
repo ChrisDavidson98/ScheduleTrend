@@ -46,7 +46,7 @@ const APP_TOKEN = 'Y2gF_c7IeREBpQJQcvwA6ki-i8FXcNpEW1UKqtJDxUU';
 // ════════════════════════════════════════════════════════════════
 
 const STAGE_ORDER = [
-  'Paint Ready', 'HOLD PAINT', "Trimm'd", 'Trim Rdy', 'Trim Ready-HOLD', 'Triming',
+  'Paint Ready/Painting', 'HOLD PAINT', "Trimm'd", 'Trim Rdy', 'Trim Ready-HOLD', 'Triming',
   "Tape'g", 'Hung', 'Batts', 'RI Passed', 'RI Inspect', 'ReRI Inspect',
   'E-Mech', 'Furdown', 'P-Mech', 'M-Mech', 'Roof',
 ];
@@ -133,6 +133,19 @@ function isFlagged(h) {
   return !!(h.notes && /verify/i.test(h.notes));
 }
 
+// The parser's output order roughly follows the PDF's own row order, but
+// that's not authoritative — corrections (like the stale trim-tier stage
+// override) change a house's effective stage without moving its position in
+// the list. Sort explicitly by canonical stage progression instead of
+// trusting extraction order, so the display always matches reality.
+function stageRank(stage) {
+  const i = STAGE_ORDER.indexOf(stage);
+  return i === -1 ? STAGE_ORDER.length : i; // unrecognized stages sort last
+}
+function sortByStage(houses) {
+  return [...houses].sort((a, b) => stageRank(a.stage) - stageRank(b.stage));
+}
+
 function FlagBanner({ houses }) {
   const flagged = houses.filter(isFlagged);
   if (!flagged.length) return null;
@@ -212,7 +225,7 @@ function ReviewScreen({ parsed, onSave, onDiscard, saving }) {
             </tr>
           </thead>
           <tbody>
-            {parsed.houses.map((h, i) => (
+            {sortByStage(parsed.houses).map((h, i) => (
               <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
                 <td style={S.td}>{h.address}{h.note && <div style={S.tdSub}>{h.note}</div>}</td>
                 <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
@@ -269,7 +282,7 @@ function WeekDetail({ weekDate, houses, onBack }) {
             <tr>{['Address', 'Subdivision', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor', 'Notes'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
           </thead>
           <tbody>
-            {houses.map((h, i) => (
+            {sortByStage(houses).map((h, i) => (
               <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
                 <td style={S.td}>{h.address}</td>
                 <td style={S.td}>{h.subdivision || <span style={{ opacity: 0.35 }}>—</span>}</td>
