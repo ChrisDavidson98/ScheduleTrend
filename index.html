@@ -125,6 +125,36 @@ function StagePipeline({ houses }) {
   );
 }
 
+// A row is "flagged" when the parser hit something it didn't recognize and
+// said so in notes (see the "unrecognized stage" / "labor code unclear"
+// instructions in the parsing prompt). This is the only way problems surface
+// — nothing pings you automatically, so this banner is the whole mechanism.
+function isFlagged(h) {
+  return !!(h.notes && /verify/i.test(h.notes));
+}
+
+function FlagBanner({ houses }) {
+  const flagged = houses.filter(isFlagged);
+  if (!flagged.length) return null;
+  const summary = flagged.map((h) => `${h.address}: ${h.notes}`).join('\n');
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(summary);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) { /* clipboard blocked — the text is still visible below to copy by hand */ }
+  };
+  return (
+    <div style={S.flagBanner}>
+      <div style={S.flagTitle}>⚠ {flagged.length} row{flagged.length > 1 ? 's' : ''} the parser wasn't sure about</div>
+      <div style={S.flagSub}>Paste this into chat with Claude so it can be taught for next time.</div>
+      <pre style={S.flagText}>{summary}</pre>
+      <button style={S.flagCopyBtn} onClick={copy}>{copied ? 'COPIED' : 'COPY FOR CHAT'}</button>
+    </div>
+  );
+}
+
 function DropZone({ onFile, busy }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
@@ -169,6 +199,8 @@ function ReviewScreen({ parsed, onSave, onDiscard, saving }) {
         <StagePipeline houses={parsed.houses} />
       </div>
 
+      <FlagBanner houses={parsed.houses} />
+
       <div style={S.secLbl}>HOUSES</div>
       <div style={S.tableWrap}>
         <table style={S.table}>
@@ -181,14 +213,14 @@ function ReviewScreen({ parsed, onSave, onDiscard, saving }) {
           </thead>
           <tbody>
             {parsed.houses.map((h, i) => (
-              <tr key={i} style={S.tr}>
+              <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
                 <td style={S.td}>{h.address}{h.note && <div style={S.tdSub}>{h.note}</div>}</td>
                 <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
                 <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
                 <td style={S.td}>{fmtDate(h.matlArrivalDate) || '—'}</td>
                 <td style={S.td}>{h.matl || '—'}</td>
                 <td style={S.td}>{h.labor || '—'}</td>
-                <td style={S.tdNotes}>{h.notes || ''}</td>
+                <td style={{ ...S.tdNotes, ...(isFlagged(h) ? S.tdNotesFlagged : {}) }}>{isFlagged(h) && '⚠ '}{h.notes || ''}</td>
               </tr>
             ))}
           </tbody>
@@ -230,20 +262,22 @@ function WeekDetail({ weekDate, houses, onBack }) {
       <div style={{ marginBottom: 24 }}>
         <StagePipeline houses={houses} />
       </div>
+      <FlagBanner houses={houses} />
       <div style={S.tableWrap}>
         <table style={S.table}>
           <thead>
-            <tr>{['Address', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
+            <tr>{['Address', 'Stage', 'Status Date', 'Mat\u2019l Arrival', 'Mat\u2019l', 'Labor', 'Notes'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {houses.map((h, i) => (
-              <tr key={i} style={S.tr}>
+              <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
                 <td style={S.td}>{h.address}</td>
                 <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
                 <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
                 <td style={S.td}>{fmtDate(h.matlArrivalDate) || '—'}</td>
                 <td style={S.td}>{h.matl || '—'}</td>
                 <td style={S.td}>{h.labor || '—'}</td>
+                <td style={{ ...S.tdNotes, ...(isFlagged(h) ? S.tdNotesFlagged : {}) }}>{isFlagged(h) && '⚠ '}{h.notes || ''}</td>
               </tr>
             ))}
           </tbody>
@@ -403,10 +437,18 @@ const S = {
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 12 },
   th: { textAlign: 'left', padding: '10px 12px', fontSize: 9, letterSpacing: '0.08em', color: '#6b7280', borderBottom: '1px solid #1c2230', whiteSpace: 'nowrap' },
   tr: { borderBottom: '1px solid #151b26' },
+  trFlagged: { backgroundColor: 'rgba(245,158,11,0.06)' },
   td: { padding: '9px 12px', color: '#d1d5db', whiteSpace: 'nowrap' },
   tdSub: { fontSize: 10, color: '#6b7280', marginTop: 2 },
   tdNotes: { padding: '9px 12px', color: '#9ca3af', fontSize: 11, whiteSpace: 'normal', minWidth: 140 },
+  tdNotesFlagged: { color: '#fbbf24', fontWeight: 500 },
   stagePill: { fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 8px', borderRadius: 3, border: '1px solid', whiteSpace: 'nowrap' },
+
+  flagBanner: { backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 8, padding: '14px 16px', marginBottom: 20 },
+  flagTitle: { fontSize: 13, fontWeight: 700, color: '#fbbf24', marginBottom: 4 },
+  flagSub: { fontSize: 11, color: '#d1a659', marginBottom: 10 },
+  flagText: { fontSize: 11, color: '#e5e7eb', backgroundColor: '#08090a', border: '1px solid #232a38', borderRadius: 6, padding: '10px 12px', whiteSpace: 'pre-wrap', marginBottom: 10, maxHeight: 160, overflowY: 'auto' },
+  flagCopyBtn: { background: 'none', border: '1px solid #fbbf24', color: '#fbbf24', padding: '7px 14px', borderRadius: 4, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
 
   reviewActions: { display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 },
   pBtn: { backgroundColor: '#5c7a99', color: '#08090a', border: 'none', padding: '10px 20px', borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
