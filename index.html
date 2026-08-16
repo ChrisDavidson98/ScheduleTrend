@@ -62,6 +62,22 @@ const STAGE_COLOR = (stage) => {
   return `rgb(${r},${g},${b})`;
 };
 
+// Mirrors the backend's SUBDIVISION_STREETS keys — used to derive a
+// superintendent filter from whatever subdivision a house got tagged with.
+const SUBDIVISION_SUPERINTENDENT = {
+  'Woodland Hills': 'Chris',
+  'Canyon Lakes': 'Jack',
+  'Prairie Farms': 'Jason',
+};
+
+const ASK_EXAMPLES = [
+  'Which house has been stuck the longest?',
+  'What changed since last week?',
+  'Which subdivision is furthest behind?',
+  'Any houses with no material yet?',
+  "What's Randy working on right now?",
+];
+
 function fmtDate(d) {
   if (!d) return null;
   try { return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
@@ -250,6 +266,238 @@ function ReviewScreen({ parsed, onSave, onDiscard, saving }) {
   );
 }
 
+function AskBar({ onAsk, asking, answer, answerError }) {
+  const [question, setQuestion] = useState('');
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setPlaceholderIdx((i) => (i + 1) % ASK_EXAMPLES.length), 3200);
+    return () => clearInterval(t);
+  }, []);
+
+  const submit = () => {
+    if (!question.trim() || asking) return;
+    onAsk(question.trim());
+  };
+
+  return (
+    <div style={S.askWrap}>
+      <div style={S.askRow}>
+        <input
+          style={S.askInput}
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          placeholder={`Ask something — e.g. "${ASK_EXAMPLES[placeholderIdx]}"`}
+        />
+        <button style={S.askBtn} onClick={submit} disabled={asking || !question.trim()}>
+          {asking ? '···' : 'ASK'}
+        </button>
+      </div>
+      <div style={S.askCost}>Filtering and browsing below are free — asking here is the only thing that costs anything.</div>
+      {answerError && <div style={S.askError}>{answerError}</div>}
+      {answer && !answerError && <div style={S.askAnswer}>{answer}</div>}
+    </div>
+  );
+}
+
+const DATE_RANGES = [
+  { key: '4w', label: '4 WEEKS', days: 28 },
+  { key: '3m', label: '3 MONTHS', days: 92 },
+  { key: '6m', label: '6 MONTHS', days: 183 },
+  { key: '1y', label: '1 YEAR', days: 366 },
+  { key: 'all', label: 'ALL TIME', days: null },
+];
+
+function withinRange(weekDate, rangeKey) {
+  if (rangeKey === 'all') return true;
+  const range = DATE_RANGES.find((r) => r.key === rangeKey);
+  if (!range || !range.days) return true;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - range.days);
+  return new Date(weekDate + 'T00:00:00') >= cutoff;
+}
+
+function daysBetween(a, b) {
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+}
+
+// Construction convention: weekends don't count as working days. Used for
+// the timeline chart specifically — daysBetween (calendar days) stays as-is
+// for anything else that needs a raw date difference.
+function businessDaysBetween(a, b) {
+  let start = new Date(a + 'T00:00:00');
+  let end = new Date(b + 'T00:00:00');
+  if (end < start) { const t = start; start = end; end = t; }
+  let count = 0;
+  const cur = new Date(start);
+  cur.setDate(cur.getDate() + 1);
+  while (cur <= end) {
+    const day = cur.getDay();
+    if (day !== 0 && day !== 6) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+// Builds day-count segments for one address across every week it's been
+// seen, entirely from data already on hand — no AI call, no cost. Each
+// segment covers the gap between one snapshot and the next; the final
+// segment runs from the last snapshot to today and is marked "ongoing"
+// since the house may have moved on since the last upload.
+// Merges consecutive same-stage snapshots into one continuous run (so a
+// house showing "Roof" two weeks running is one bar segment, not two), then
+// for each transition prefers the actual recorded statusDate difference —
+// the specific dates written on the sheet — over the raw gap between
+// uploads, since the sheet's own dates are more precise than how often you
+// happen to upload. Falls back to upload-date gaps only when a statusDate
+// isn't available on one side of the transition.
+function buildTimeline(rows) {
+  const sorted = [...rows].sort((a, b) => a.weekDate.localeCompare(b.weekDate));
+
+  const runs = [];
+  sorted.forEach((r) => {
+    const last = runs[runs.length - 1];
+    if (last && last.stage === r.stage) last.snapshots.push(r);
+    else runs.push({ stage: r.stage, snapshots: [r] });
+  });
+
+  const segments = [];
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    const isLast = i === runs.length - 1;
+    const firstSnap = run.snapshots[0];
+    let days, precise = false;
+
+    if (!isLast) {
+      const nextFirstSnap = runs[i + 1].snapshots[0];
+      const startStatus = firstSnap.statusDate;
+      const endStatus = nextFirstSnap.statusDate;
+      if (startStatus && endStatus && daysBetween(startStatus, endStatus) > 0) {
+        days = businessDaysBetween(startStatus, endStatus);
+        precise = true;
+      } else {
+        days = businessDaysBetween(firstSnap.weekDate, nextFirstSnap.weekDate);
+      }
+    } else {
+      // Ongoing — from the earliest known date for this run to today.
+      const start = firstSnap.statusDate || firstSnap.weekDate;
+      days = businessDaysBetween(start, new Date().toISOString().slice(0, 10));
+    }
+
+    segments.push({ stage: run.stage, days: Math.max(1, days), ongoing: isLast, precise });
+  }
+  return segments;
+}
+
+function HouseTimeline({ address, rows }) {
+  const segments = buildTimeline(rows);
+  const totalDays = segments.reduce((sum, s) => sum + s.days, 0) || 1;
+  if (!segments.length) return null;
+  return (
+    <div style={S.timelineWrap}>
+      <div style={S.timelineTitle}>{address} — stage duration in business days (weekends excluded) from your saved weeks (no AI). Plain numbers use the sheet's own recorded dates; "~" means estimated from how often you happened to upload.</div>
+      <div style={S.timelineBar}>
+        {segments.map((s, i) => (
+          <div key={i} style={{ flex: s.days, minWidth: 2, background: STAGE_COLOR(s.stage), position: 'relative' }} title={`${s.stage}: ${s.days} day${s.days === 1 ? '' : 's'}`} />
+        ))}
+      </div>
+      <div style={S.timelineLegend}>
+        {segments.map((s, i) => (
+          <div key={i} style={S.timelineLegendItem}>
+            <span style={{ ...S.timelineDot, background: STAGE_COLOR(s.stage) }} />
+            <span style={S.timelineLegendStage}>{s.stage}</span>
+            <span style={S.timelineLegendDays}>{s.precise || s.ongoing ? '' : '~'}{s.days}d{s.ongoing ? ' (ongoing)' : ''}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BrowseScreen({ allRows, loading, onAsk, asking, answer, answerError }) {
+  const [subdivision, setSubdivision] = useState('');
+  const [superintendent, setSuperintendent] = useState('');
+  const [stage, setStage] = useState('');
+  const [range, setRange] = useState('3m');
+  const [addressQuery, setAddressQuery] = useState('');
+
+  const subdivisions = Array.from(new Set(allRows.map((r) => r.subdivision).filter(Boolean))).sort();
+  const stages = Array.from(new Set(allRows.map((r) => r.stage).filter(Boolean))).sort((a, b) => stageRank(a) - stageRank(b));
+
+  const filtered = sortByStage(allRows.filter((r) => {
+    if (subdivision && r.subdivision !== subdivision) return false;
+    if (superintendent && SUBDIVISION_SUPERINTENDENT[r.subdivision] !== superintendent) return false;
+    if (stage && r.stage !== stage) return false;
+    if (addressQuery && !r.address.toLowerCase().includes(addressQuery.toLowerCase())) return false;
+    if (!withinRange(r.weekDate, range)) return false;
+    return true;
+  }));
+
+  // If the address search narrows things to exactly one house, show its full
+  // history (every week it's ever appeared in, ignoring the date-range
+  // filter) as a timeline instead of just a table row per week.
+  const matchedAddresses = addressQuery ? Array.from(new Set(filtered.map((r) => r.address))) : [];
+  const singleAddress = matchedAddresses.length === 1 ? matchedAddresses[0] : null;
+  const timelineRows = singleAddress ? allRows.filter((r) => r.address === singleAddress) : [];
+
+  return (
+    <div>
+      <AskBar onAsk={onAsk} asking={asking} answer={answer} answerError={answerError} />
+
+      <div style={S.filterRow}>
+        <input style={S.select} placeholder="Search address…" value={addressQuery} onChange={(e) => setAddressQuery(e.target.value)} />
+        <select style={S.select} value={subdivision} onChange={(e) => setSubdivision(e.target.value)}>
+          <option value="">All subdivisions</option>
+          {subdivisions.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select style={S.select} value={superintendent} onChange={(e) => setSuperintendent(e.target.value)}>
+          <option value="">All superintendents</option>
+          {Array.from(new Set(Object.values(SUBDIVISION_SUPERINTENDENT))).map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select style={S.select} value={stage} onChange={(e) => setStage(e.target.value)}>
+          <option value="">All stages</option>
+          {stages.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+
+      <div style={S.rangeRow}>
+        {DATE_RANGES.map((r) => (
+          <button key={r.key} style={range === r.key ? S.rangeBtnActive : S.rangeBtn} onClick={() => setRange(r.key)}>{r.label}</button>
+        ))}
+      </div>
+
+      {singleAddress && <HouseTimeline address={singleAddress} rows={timelineRows} />}
+
+      {loading ? (
+        <div style={S.emptyState}>Loading all weeks…</div>
+      ) : !filtered.length ? (
+        <div style={S.emptyState}>No rows match those filters.</div>
+      ) : (
+        <div style={S.tableWrap}>
+          <table style={S.table}>
+            <thead>
+              <tr>{['Week', 'Address', 'Subdivision', 'Stage', 'Status Date', 'Labor'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {filtered.map((h, i) => (
+                <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
+                  <td style={S.td}>{fmtDate(h.weekDate) || h.weekDate}</td>
+                  <td style={S.td}>{h.address}</td>
+                  <td style={S.td}>{h.subdivision || <span style={{ opacity: 0.35 }}>—</span>}</td>
+                  <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
+                  <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
+                  <td style={S.td}>{h.labor || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WeeksList({ weeks, onOpen, loading }) {
   if (loading) return <div style={S.emptyState}>Loading past weeks…</div>;
   if (!weeks.length) return <div style={S.emptyState}>No weeks saved yet. Upload one above to get started.</div>;
@@ -312,7 +560,7 @@ function WeekDetail({ weekDate, houses, onBack, onDelete, deleting }) {
 }
 
 function App() {
-  const [view, setView] = useState('upload'); // upload | review | weeks | weekDetail
+  const [view, setView] = useState('upload'); // upload | review | weeks | weekDetail | browse
   const [parsed, setParsed] = useState(null);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -323,6 +571,12 @@ function App() {
   const [activeWeek, setActiveWeek] = useState(null);
   const [activeWeekHouses, setActiveWeekHouses] = useState([]);
   const [deleting, setDeleting] = useState(false);
+  const [allRows, setAllRows] = useState([]);
+  const [allRowsLoading, setAllRowsLoading] = useState(false);
+  const [allRowsLoaded, setAllRowsLoaded] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [answer, setAnswer] = useState(null);
+  const [answerError, setAnswerError] = useState(null);
 
   const configured = SCRIPT_URL.indexOf('PASTE_') !== 0 && APP_TOKEN.indexOf('PASTE_') !== 0;
 
@@ -333,6 +587,35 @@ function App() {
       setWeeks(result || []);
     } catch (e) { /* silent on the tab switch — user hasn't asked for it yet */ }
     setWeeksLoading(false);
+  };
+
+  // Fetches every week's rows once and caches them for the Browse tab —
+  // filtering then happens client-side, no repeat network calls per filter change.
+  const loadAllRows = async (force) => {
+    if (allRowsLoaded && !force) return;
+    setAllRowsLoading(true);
+    try {
+      const weekList = await callBackendGet('listWeeks');
+      const perWeek = await Promise.all((weekList || []).map((w) => callBackendGet('getWeek', { weekDate: w })));
+      setAllRows(perWeek.flat());
+      setAllRowsLoaded(true);
+    } catch (e) {
+      setError(e.message);
+    }
+    setAllRowsLoading(false);
+  };
+
+  const handleAsk = async (question) => {
+    setAsking(true);
+    setAnswer(null);
+    setAnswerError(null);
+    try {
+      const result = await callBackendPost('askQuestion', { question });
+      setAnswer(result.answer);
+    } catch (e) {
+      setAnswerError(e.message || 'Something went wrong answering that.');
+    }
+    setAsking(false);
   };
 
   useEffect(() => { if (configured) loadWeeks(); }, []);
@@ -408,8 +691,9 @@ function App() {
       <div style={S.header}>
         <div style={S.logo}>SCHEDULE TREND</div>
         <div style={S.nav}>
-          <button style={{ ...S.navBtn, ...(view === 'upload' || view === 'review' ? S.navActive : {}) }} onClick={() => { setView('upload'); setParsed(null); }}>UPLOAD</button>
+          <button style={{ ...S.navBtn, ...(view === 'browse' ? S.navActive : {}) }} onClick={() => { setView('browse'); loadAllRows(); }}>BROWSE</button>
           <button style={{ ...S.navBtn, ...(view === 'weeks' || view === 'weekDetail' ? S.navActive : {}) }} onClick={() => { setView('weeks'); loadWeeks(); }}>WEEKS</button>
+          <button style={{ ...S.navBtn, ...(view === 'upload' || view === 'review' ? S.navActive : {}) }} onClick={() => { setView('upload'); setParsed(null); }}>UPLOAD</button>
         </div>
       </div>
 
@@ -424,6 +708,11 @@ function App() {
           <ReviewScreen parsed={parsed} saving={saving}
             onSave={handleSave}
             onDiscard={() => { setParsed(null); setView('upload'); }} />
+        )}
+
+        {view === 'browse' && (
+          <BrowseScreen allRows={allRows} loading={allRowsLoading}
+            onAsk={handleAsk} asking={asking} answer={answer} answerError={answerError} />
         )}
 
         {view === 'weeks' && <WeeksList weeks={weeks} loading={weeksLoading} onOpen={openWeek} />}
@@ -500,6 +789,29 @@ const S = {
   weekDate: { fontSize: 14, color: '#f3f4f6', fontWeight: 500 },
   weekArrow: { color: '#5c7a99' },
   emptyState: { textAlign: 'center', padding: '50px 20px', color: '#4b5563', fontSize: 13 },
+
+  askWrap: { marginBottom: 20 },
+  askRow: { display: 'flex', gap: 8 },
+  askInput: { flex: 1, backgroundColor: '#0f131b', border: '1.5px solid #232a38', borderRadius: 8, color: '#f3f4f6', padding: '13px 16px', fontSize: 14, fontFamily: "'DM Mono',monospace", outline: 'none' },
+  askBtn: { backgroundColor: '#5c7a99', color: '#08090a', border: 'none', padding: '0 22px', borderRadius: 8, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  askAnswer: { marginTop: 12, backgroundColor: 'rgba(92,122,153,0.08)', border: '1px solid rgba(92,122,153,0.25)', borderRadius: 8, padding: '14px 16px', fontSize: 13, color: '#e5e7eb', lineHeight: 1.6 },
+  askError: { marginTop: 12, backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '12px 16px', fontSize: 12, color: '#f87171' },
+  askCost: { fontSize: 10, color: '#4b5563', marginTop: 8, letterSpacing: '0.02em' },
+
+  timelineWrap: { backgroundColor: '#0f131b', border: '1px solid #1c2230', borderRadius: 8, padding: '16px', marginBottom: 20 },
+  timelineTitle: { fontSize: 11, color: '#8f97a3', marginBottom: 12, letterSpacing: '0.02em' },
+  timelineBar: { display: 'flex', height: 28, borderRadius: 5, overflow: 'hidden', marginBottom: 12 },
+  timelineLegend: { display: 'flex', flexWrap: 'wrap', gap: '8px 16px' },
+  timelineLegendItem: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 },
+  timelineDot: { width: 8, height: 8, borderRadius: 2, flexShrink: 0 },
+  timelineLegendStage: { color: '#d1d5db' },
+  timelineLegendDays: { color: '#6b7280' },
+
+  filterRow: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 },
+  select: { backgroundColor: '#0f131b', border: '1px solid #232a38', borderRadius: 6, color: '#e5e7eb', padding: '8px 10px', fontSize: 12, fontFamily: "'DM Mono',monospace" },
+  rangeRow: { display: 'flex', gap: 6, marginBottom: 20 },
+  rangeBtn: { background: 'none', border: '1px solid #232a38', color: '#6b7280', padding: '6px 12px', borderRadius: 4, fontSize: 10, letterSpacing: '0.05em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  rangeBtnActive: { background: 'none', border: '1px solid #5c7a99', color: '#5c7a99', backgroundColor: 'rgba(92,122,153,0.1)', padding: '6px 12px', borderRadius: 4, fontSize: 10, letterSpacing: '0.05em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
 };
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
