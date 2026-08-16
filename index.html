@@ -362,6 +362,18 @@ function buildTimeline(rows) {
     else runs.push({ stage: r.stage, snapshots: [r] });
   });
 
+  // A snapshot's statusDate is only trustworthy as "this already happened"
+  // when it's on or before the report (weekDate) it appeared on. A
+  // statusDate AFTER its own report date is a scheduled target for that
+  // stage, not a confirmed fact — and definitely not evidence about when
+  // the PREVIOUS stage finished. In that case, fall back to the report date
+  // itself, which is the one thing we know for certain: as of this report,
+  // the house had moved on.
+  function confirmedDate(snap) {
+    if (snap.statusDate && daysBetween(snap.statusDate, snap.weekDate) >= 0) return snap.statusDate;
+    return snap.weekDate;
+  }
+
   const segments = [];
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
@@ -371,17 +383,13 @@ function buildTimeline(rows) {
 
     if (!isLast) {
       const nextFirstSnap = runs[i + 1].snapshots[0];
-      const startStatus = firstSnap.statusDate;
-      const endStatus = nextFirstSnap.statusDate;
-      if (startStatus && endStatus && daysBetween(startStatus, endStatus) > 0) {
-        days = businessDaysBetween(startStatus, endStatus);
-        precise = true;
-      } else {
-        days = businessDaysBetween(firstSnap.weekDate, nextFirstSnap.weekDate);
-      }
+      const start = confirmedDate(firstSnap);
+      const end = confirmedDate(nextFirstSnap);
+      days = businessDaysBetween(start, end);
+      precise = start === firstSnap.statusDate && end === nextFirstSnap.statusDate;
     } else {
-      // Ongoing — from the earliest known date for this run to today.
-      const start = firstSnap.statusDate || firstSnap.weekDate;
+      // Ongoing — from the earliest confirmed date for this run to today.
+      const start = confirmedDate(firstSnap);
       days = businessDaysBetween(start, new Date().toISOString().slice(0, 10));
     }
 
