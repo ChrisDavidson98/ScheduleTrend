@@ -162,6 +162,16 @@ function sortByStage(houses) {
   return [...houses].sort((a, b) => stageRank(a.stage) - stageRank(b.stage));
 }
 
+// For multi-week views (Browse): most recent week first, stage progression
+// within each week second — so same-stage rows from different weeks never
+// sit adjacent looking like duplicates.
+function sortByWeekThenStage(houses) {
+  return [...houses].sort((a, b) => {
+    if (a.weekDate !== b.weekDate) return b.weekDate.localeCompare(a.weekDate);
+    return stageRank(a.stage) - stageRank(b.stage);
+  });
+}
+
 function FlagBanner({ houses }) {
   const flagged = houses.filter(isFlagged);
   if (!flagged.length) return null;
@@ -433,7 +443,7 @@ function BrowseScreen({ allRows, loading, onAsk, asking, answer, answerError }) 
   const subdivisions = Array.from(new Set(allRows.map((r) => r.subdivision).filter(Boolean))).sort();
   const stages = Array.from(new Set(allRows.map((r) => r.stage).filter(Boolean))).sort((a, b) => stageRank(a) - stageRank(b));
 
-  const filtered = sortByStage(allRows.filter((r) => {
+  const filtered = sortByWeekThenStage(allRows.filter((r) => {
     if (subdivision && r.subdivision !== subdivision) return false;
     if (superintendent && SUBDIVISION_SUPERINTENDENT[r.subdivision] !== superintendent) return false;
     if (stage && r.stage !== stage) return false;
@@ -485,19 +495,28 @@ function BrowseScreen({ allRows, loading, onAsk, asking, answer, answerError }) 
         <div style={S.tableWrap}>
           <table style={S.table}>
             <thead>
-              <tr>{['Week', 'Address', 'Subdivision', 'Stage', 'Status Date', 'Labor'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
+              <tr>{['Address', 'Subdivision', 'Stage', 'Status Date', 'Labor'].map((h) => <th key={h} style={S.th}>{h}</th>)}</tr>
             </thead>
             <tbody>
-              {filtered.map((h, i) => (
-                <tr key={i} style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
-                  <td style={S.td}>{fmtDate(h.weekDate) || h.weekDate}</td>
-                  <td style={S.td}>{h.address}</td>
-                  <td style={S.td}>{h.subdivision || <span style={{ opacity: 0.35 }}>—</span>}</td>
-                  <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
-                  <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
-                  <td style={S.td}>{h.labor || '—'}</td>
-                </tr>
-              ))}
+              {filtered.map((h, i) => {
+                const newWeek = i === 0 || filtered[i - 1].weekDate !== h.weekDate;
+                return (
+                  <React.Fragment key={i}>
+                    {newWeek && (
+                      <tr>
+                        <td colSpan={5} style={S.weekHeaderRow}>{fmtDate(h.weekDate) || h.weekDate}</td>
+                      </tr>
+                    )}
+                    <tr style={{ ...S.tr, ...(isFlagged(h) ? S.trFlagged : {}) }}>
+                      <td style={S.td}>{h.address}</td>
+                      <td style={S.td}>{h.subdivision || <span style={{ opacity: 0.35 }}>—</span>}</td>
+                      <td style={S.td}><span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span></td>
+                      <td style={S.td}>{fmtDate(h.statusDate) || '—'}</td>
+                      <td style={S.td}>{h.labor || '—'}</td>
+                    </tr>
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -774,6 +793,7 @@ const S = {
   th: { textAlign: 'left', padding: '10px 12px', fontSize: 9, letterSpacing: '0.08em', color: '#6b7280', borderBottom: '1px solid #1c2230', whiteSpace: 'nowrap' },
   tr: { borderBottom: '1px solid #151b26' },
   trFlagged: { backgroundColor: 'rgba(245,158,11,0.06)' },
+  weekHeaderRow: { backgroundColor: '#151b26', color: '#5c7a99', fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', padding: '10px 12px', borderTop: '1px solid #232a38', borderBottom: '1px solid #1c2230' },
   td: { padding: '9px 12px', color: '#d1d5db', whiteSpace: 'nowrap' },
   tdSub: { fontSize: 10, color: '#6b7280', marginTop: 2 },
   tdNotes: { padding: '9px 12px', color: '#9ca3af', fontSize: 11, whiteSpace: 'normal', minWidth: 140 },
