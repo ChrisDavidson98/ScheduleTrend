@@ -304,7 +304,6 @@ function AskBar({ onAsk, asking, answer, answerError }) {
           {asking ? '···' : 'ASK'}
         </button>
       </div>
-      <div style={S.askCost}>Filtering and browsing below are free — asking here is the only thing that costs anything.</div>
       {answerError && <div style={S.askError}>{answerError}</div>}
       {answer && !answerError && <div style={S.askAnswer}>{answer}</div>}
     </div>
@@ -824,7 +823,6 @@ const S = {
   askBtn: { backgroundColor: '#5c7a99', color: '#08090a', border: 'none', padding: '0 22px', borderRadius: 8, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
   askAnswer: { marginTop: 12, backgroundColor: 'rgba(92,122,153,0.08)', border: '1px solid rgba(92,122,153,0.25)', borderRadius: 8, padding: '14px 16px', fontSize: 13, color: '#e5e7eb', lineHeight: 1.6 },
   askError: { marginTop: 12, backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '12px 16px', fontSize: 12, color: '#f87171' },
-  askCost: { fontSize: 10, color: '#4b5563', marginTop: 8, letterSpacing: '0.02em' },
 
   timelineWrap: { backgroundColor: '#0f131b', border: '1px solid #1c2230', borderRadius: 8, padding: '16px', marginBottom: 20 },
   timelineTitle: { fontSize: 11, color: '#8f97a3', marginBottom: 12, letterSpacing: '0.02em' },
