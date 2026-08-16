@@ -46,8 +46,8 @@ const APP_TOKEN = 'Y2gF_c7IeREBpQJQcvwA6ki-i8FXcNpEW1UKqtJDxUU';
 // ════════════════════════════════════════════════════════════════
 
 const STAGE_ORDER = [
-  'Paint Ready/Painting', 'HOLD PAINT', "Trimm'd", 'Trim Rdy', 'Trim Ready-HOLD', 'Triming',
-  "Tape'g", 'Hung', 'Batts', 'RI Passed', 'RI Inspect', 'ReRI Inspect',
+  'HOLD PAINT', 'Paint Ready/Painting', "Trimm'd", 'Triming', 'Trim Ready-HOLD', 'Trim Rdy',
+  "Tape'g", 'Hung', 'Batts', 'RI Passed', 'ReRI Inspect', 'RI Inspect',
   'E-Mech', 'Furdown', 'P-Mech', 'M-Mech', 'Roof',
 ];
 
@@ -265,12 +265,22 @@ function WeeksList({ weeks, onOpen, loading }) {
   );
 }
 
-function WeekDetail({ weekDate, houses, onBack }) {
+function WeekDetail({ weekDate, houses, onBack, onDelete, deleting }) {
+  const [confirming, setConfirming] = useState(false);
   return (
     <div>
       <div style={S.ph}>
         <button style={S.gBtn} onClick={onBack}>← ALL WEEKS</button>
         <h1 style={S.pt}>{fmtDate(weekDate) || weekDate}</h1>
+        {confirming ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <span style={S.confirmText}>Delete this week for good?</span>
+            <button style={S.dangerBtn} disabled={deleting} onClick={() => onDelete(weekDate)}>{deleting ? 'DELETING…' : 'YES, DELETE'}</button>
+            <button style={S.gBtn} onClick={() => setConfirming(false)}>CANCEL</button>
+          </div>
+        ) : (
+          <button style={S.gBtn} onClick={() => setConfirming(true)}>DELETE WEEK</button>
+        )}
       </div>
       <div style={{ marginBottom: 24 }}>
         <StagePipeline houses={houses} />
@@ -312,6 +322,7 @@ function App() {
   const [weeksLoading, setWeeksLoading] = useState(false);
   const [activeWeek, setActiveWeek] = useState(null);
   const [activeWeekHouses, setActiveWeekHouses] = useState([]);
+  const [deleting, setDeleting] = useState(false);
 
   const configured = SCRIPT_URL.indexOf('PASTE_') !== 0 && APP_TOKEN.indexOf('PASTE_') !== 0;
 
@@ -366,6 +377,20 @@ function App() {
     }
   };
 
+  const handleDeleteWeek = async (weekDate) => {
+    setDeleting(true);
+    try {
+      await callBackendPost('deleteWeek', { weekDate });
+      setToast(`Deleted ${fmtDate(weekDate) || weekDate}.`);
+      setTimeout(() => setToast(null), 4000);
+      setView('weeks');
+      loadWeeks();
+    } catch (e) {
+      setError(e.message);
+    }
+    setDeleting(false);
+  };
+
   if (!configured) {
     return (
       <div style={S.app}>
@@ -403,7 +428,7 @@ function App() {
 
         {view === 'weeks' && <WeeksList weeks={weeks} loading={weeksLoading} onOpen={openWeek} />}
 
-        {view === 'weekDetail' && <WeekDetail weekDate={activeWeek} houses={activeWeekHouses} onBack={() => setView('weeks')} />}
+        {view === 'weekDetail' && <WeekDetail weekDate={activeWeek} houses={activeWeekHouses} onBack={() => setView('weeks')} onDelete={handleDeleteWeek} deleting={deleting} />}
       </div>
     </div>
   );
@@ -467,6 +492,8 @@ const S = {
   reviewActions: { display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 },
   pBtn: { backgroundColor: '#5c7a99', color: '#08090a', border: 'none', padding: '10px 20px', borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
   gBtn: { background: 'none', border: '1px solid #232a38', color: '#9ca3af', padding: '10px 16px', borderRadius: 4, fontSize: 11, letterSpacing: '0.08em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  dangerBtn: { background: '#7f1d1d', color: '#fecaca', border: 'none', padding: '10px 16px', borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  confirmText: { fontSize: 11, color: '#fca5a5', alignSelf: 'center' },
 
   stack: { display: 'flex', flexDirection: 'column', gap: 8 },
   weekRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0f131b', border: '1px solid #1c2230', borderRadius: 8, padding: '14px 16px', cursor: 'pointer' },
