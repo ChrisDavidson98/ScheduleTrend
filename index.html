@@ -713,6 +713,112 @@ function WeekDetail({ weekDate, houses, onBack, onDelete, deleting }) {
   );
 }
 
+// Chris's own subdivision — the Grid tab is scoped to his houses only, matching
+// how he's tracked this by hand (graph paper: his addresses, not the whole crew's).
+const GRID_SUBDIVISION = 'Woodland Hills';
+const GRID_ORDER_STORAGE_KEY = 'scheduleTrendGridOrder';
+
+function loadGridOrder() {
+  try {
+    const raw = localStorage.getItem(GRID_ORDER_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) { return []; }
+}
+
+function saveGridOrder(order) {
+  try { localStorage.setItem(GRID_ORDER_STORAGE_KEY, JSON.stringify(order)); } catch (e) { /* localStorage unavailable — order just won't persist across reloads */ }
+}
+
+// Mirrors the graph-paper habit this replaces: addresses down the left in an
+// order Chris picks himself (persisted locally, nudged with up/down arrows),
+// weeks across the top, most recent stage per cell. Read-only history view —
+// deliberately not the fill-in-the-blank Wednesday screen, which is a
+// separate, not-yet-built feature.
+function GridScreen({ allRows }) {
+  const rows = allRows.filter((r) => r.subdivision === GRID_SUBDIVISION);
+  const [order, setOrderState] = useState(loadGridOrder);
+
+  const knownAddresses = Array.from(new Set(rows.map((r) => r.address)));
+  // Reconcile: keep the saved order for addresses still present, drop ones
+  // that no longer appear in any row, append brand-new ones alphabetically
+  // at the end so nothing silently vanishes before Chris has a chance to
+  // place it deliberately.
+  const kept = order.filter((a) => knownAddresses.includes(a));
+  const fresh = knownAddresses.filter((a) => !order.includes(a)).sort();
+  const addresses = [...kept, ...fresh];
+
+  useEffect(() => {
+    if (addresses.length !== order.length || addresses.some((a, i) => a !== order[i])) {
+      setOrderState(addresses);
+      saveGridOrder(addresses);
+    }
+  }, [allRows.length]);
+
+  const weeks = Array.from(new Set(rows.map((r) => r.weekDate))).sort().slice(-5);
+
+  const setOrder = (next) => { setOrderState(next); saveGridOrder(next); };
+  const moveRow = (address, dir) => {
+    const idx = addresses.indexOf(address);
+    const swapWith = idx + dir;
+    if (swapWith < 0 || swapWith >= addresses.length) return;
+    const next = [...addresses];
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    setOrder(next);
+  };
+
+  if (!weeks.length) {
+    return <div style={S.emptyState}>No {GRID_SUBDIVISION} weeks saved yet.</div>;
+  }
+
+  return (
+    <div style={S.tableWrap}>
+      <table style={S.table}>
+        <thead>
+          <tr>
+            <th style={S.th}></th>
+            <th style={S.th}>Address</th>
+            {weeks.map((w, i) => (
+              <th key={w} style={{ ...S.th, textAlign: 'center', ...(i === weeks.length - 1 ? S.gridCurrentCol : {}) }}>{fmtDate(w) || w}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {addresses.map((address, rowI) => {
+            const addressRows = rows.filter((r) => r.address === address);
+            const segments = buildTimeline(addressRows);
+            const last = segments[segments.length - 1];
+            const currentDrift = last ? classifyDrift(last.stage, last.days, last.weeksSeen) : null;
+            return (
+              <tr key={address} style={S.tr}>
+                <td style={S.gridReorderCell}>
+                  <button style={S.gridReorderBtn} onClick={() => moveRow(address, -1)} disabled={rowI === 0} aria-label="Move up">▲</button>
+                  <button style={S.gridReorderBtn} onClick={() => moveRow(address, 1)} disabled={rowI === addresses.length - 1} aria-label="Move down">▼</button>
+                </td>
+                <td style={S.td}>{address}</td>
+                {weeks.map((w, i) => {
+                  const cell = addressRows.find((r) => r.weekDate === w);
+                  const isCurrent = i === weeks.length - 1;
+                  return (
+                    <td key={w} style={{ ...S.td, textAlign: 'center', ...(isCurrent ? S.gridCurrentCol : {}) }}>
+                      {cell ? (
+                        <span style={{
+                          ...S.stagePill,
+                          background: STAGE_COLOR(cell.stage) + '22', color: STAGE_COLOR(cell.stage), borderColor: STAGE_COLOR(cell.stage) + '55',
+                          ...(isCurrent && currentDrift && currentDrift !== 'normal' ? { outline: `1px solid ${DRIFT_META[currentDrift].color}`, outlineOffset: 2 } : {}),
+                        }}>{cell.stage}</span>
+                      ) : <span style={{ color: '#374151' }}>—</span>}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function App() {
   const [view, setView] = useState('browse'); // upload | review | weeks | weekDetail | browse
   const [parsed, setParsed] = useState(null);
@@ -846,6 +952,7 @@ function App() {
         <div style={S.logo}>SCHEDULE TREND</div>
         <div style={S.nav}>
           <button style={{ ...S.navBtn, ...(view === 'browse' ? S.navActive : {}) }} onClick={() => { setView('browse'); loadAllRows(); }}>BROWSE</button>
+          <button style={{ ...S.navBtn, ...(view === 'grid' ? S.navActive : {}) }} onClick={() => { setView('grid'); loadAllRows(); }}>GRID</button>
           <button style={{ ...S.navBtn, ...(view === 'weeks' || view === 'weekDetail' ? S.navActive : {}) }} onClick={() => { setView('weeks'); loadWeeks(); }}>WEEKS</button>
           <button style={{ ...S.navBtn, ...(view === 'upload' || view === 'review' ? S.navActive : {}) }} onClick={() => { setView('upload'); setParsed(null); }}>UPLOAD</button>
         </div>
@@ -868,6 +975,8 @@ function App() {
           <BrowseScreen allRows={allRows} loading={allRowsLoading}
             onAsk={handleAsk} asking={asking} answer={answer} answerError={answerError} />
         )}
+
+        {view === 'grid' && <GridScreen allRows={allRows} />}
 
         {view === 'weeks' && <WeeksList weeks={weeks} loading={weeksLoading} onOpen={openWeek} />}
 
@@ -967,6 +1076,10 @@ const S = {
   attentionList: { display: 'flex', flexDirection: 'column', gap: 8 },
   attentionRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 },
   attentionAddress: { color: '#f3f4f6', fontWeight: 500, minWidth: 140 },
+
+  gridCurrentCol: { backgroundColor: 'rgba(92,122,153,0.06)' },
+  gridReorderCell: { padding: '4px 2px', textAlign: 'center' },
+  gridReorderBtn: { background: 'none', border: '1px solid #232a38', color: '#6b7280', width: 20, height: 18, fontSize: 8, borderRadius: 3, cursor: 'pointer', padding: 0, display: 'block', margin: '1px auto' },
 
   filterRow: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 },
   select: { backgroundColor: '#0f131b', border: '1px solid #232a38', borderRadius: 6, color: '#e5e7eb', padding: '8px 10px', fontSize: 12, fontFamily: "'DM Mono',monospace" },
