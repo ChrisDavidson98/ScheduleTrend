@@ -51,6 +51,68 @@ const STAGE_ORDER = [
   'E-Mech', 'Furdown', 'P-Mech', 'M-Mech', 'Roof',
 ];
 
+// Per-stage duration reference (min/typical/max, in business days), learned from
+// 8 real historical houses' CoConstruct schedule exports (see PRD: Duration Baseline
+// + Drift Layer). Not guessed — every number here traces back to a specific measured
+// CoConstruct task, except where noted 'estimated split' (Hung/Tape'g), which divides
+// CoConstruct's single combined "Drop Sheetrock" number using Chris's own field
+// estimate of the hang/tape/spray-sand breakdown, since CoConstruct doesn't track
+// those as separate tasks the way the weekly PDF does.
+// Deliberately absent: RI Passed, Trimm'd, Trim Ready-HOLD, HOLD PAINT — these are
+// ad-hoc/manual flags with no reliable CoConstruct-derived duration (a hold is a
+// deliberate decision, not something to measure a "normal" length for), so they
+// never get a baseline and therefore never get flagged as running long/stuck.
+const DURATION_BASELINE = {
+  'Roof': { min: 4, typical: 4, max: 4, source: 'measured — Load Roof' },
+  'M-Mech': { min: 5, typical: 12, max: 24, source: 'measured — HVAC Rough In' },
+  'P-Mech': { min: 5, typical: 5, max: 12, source: 'measured — Plumbing Rough In' },
+  'Furdown': { min: 1, typical: 1, max: 4, source: 'measured — Fur Downs' },
+  'E-Mech': { min: 10, typical: 18, max: 22, source: 'measured — Electric Rough In' },
+  'Hung': { min: 1, typical: 2, max: 2, source: 'estimated split of combined Drop Sheetrock number' },
+  "Tape'g": { min: 7, typical: 8, max: 9, source: 'estimated split of combined Drop Sheetrock number' },
+  'RI Inspect': { min: 4, typical: 8, max: 14, source: 'measured — combined RI Inspection + Punch List + ReRI window' },
+  'ReRI Inspect': { min: 4, typical: 8, max: 14, source: 'same combined window as RI Inspect' },
+  'Batts': { min: 1, typical: 1, max: 1, source: 'measured — AIC Insulation' },
+  'Trim Rdy': { min: 1, typical: 1, max: 1, source: 'measured — Trim & Door Drop (milestone event)' },
+  'Triming': { min: 6, typical: 15, max: 40, source: 'measured — Trim Carpenters (40 = a real vendor-backlog wait, not an outlier to discard)' },
+  'Paint Ready/Painting': { min: 7, typical: 10, max: 17, source: 'measured — Paint' },
+};
+
+// Schedule Trend only observes a house once a week (one PDF upload), but several
+// baseline stages have a max under a week (Roof 4d, Furdown 4d, Batts 1d, Trim Rdy
+// 1d, Hung 2d). Comparing elapsed days against a baseline that fine is noise at
+// weekly resolution — nearly every house would read as "stuck" in its first week
+// there purely from sampling granularity, not because anything's actually wrong.
+// (Trim Rdy specifically is also just wrong to hold to a tight day count at all —
+// per Chris, it's genuinely waiting-on-labor-availability, same as Triming.)
+// For those short-baseline stages, the reliable signal Schedule Trend actually has
+// is simpler and matches how Chris described it: did the stage change between
+// consecutive weekly uploads, or has it sat still. That's what weeksSeen answers.
+const STALL_MODE_MAX_DAYS = 5;
+
+// Classifies how a house's current (ongoing) time-in-stage compares to the
+// baseline. null = no baseline for this stage (HOLD stages, RI Passed, Trimm'd, or
+// anything unrecognized) — deliberately never flagged, since there's nothing to
+// compare against (a hold is a deliberate decision, not a problem).
+function classifyDrift(stage, days, weeksSeen) {
+  const b = DURATION_BASELINE[stage];
+  if (!b) return null;
+  if (b.max <= STALL_MODE_MAX_DAYS) {
+    if (weeksSeen >= 3) return 'stuck';
+    if (weeksSeen >= 2) return 'watch';
+    return 'normal';
+  }
+  if (days > b.max * 1.5) return 'stuck';
+  if (days > b.max) return 'watch';
+  return 'normal';
+}
+
+const DRIFT_META = {
+  normal: { label: 'ON PACE', color: '#4ade80' },
+  watch: { label: 'RUNNING LONG', color: '#fbbf24' },
+  stuck: { label: 'STUCK', color: '#f87171' },
+};
+
 const STAGE_COLOR = (stage) => {
   const i = STAGE_ORDER.indexOf(stage);
   if (i === -1) return '#6b7280';
@@ -402,7 +464,7 @@ function buildTimeline(rows) {
       days = businessDaysBetween(start, new Date().toISOString().slice(0, 10));
     }
 
-    segments.push({ stage: run.stage, days: Math.max(1, days), ongoing: isLast, precise });
+    segments.push({ stage: run.stage, days: Math.max(1, days), ongoing: isLast, precise, weeksSeen: run.snapshots.length });
   }
   return segments;
 }
@@ -420,11 +482,75 @@ function HouseTimeline({ address, rows }) {
         ))}
       </div>
       <div style={S.timelineLegend}>
-        {segments.map((s, i) => (
-          <div key={i} style={S.timelineLegendItem}>
-            <span style={{ ...S.timelineDot, background: STAGE_COLOR(s.stage) }} />
-            <span style={S.timelineLegendStage}>{s.stage}</span>
-            <span style={S.timelineLegendDays}>{s.precise || s.ongoing ? '' : '~'}{s.days}d{s.ongoing ? ' (ongoing)' : ''}</span>
+        {segments.map((s, i) => {
+          const drift = s.ongoing ? classifyDrift(s.stage, s.days, s.weeksSeen) : null;
+          const stallMode = drift && DURATION_BASELINE[s.stage] && DURATION_BASELINE[s.stage].max <= STALL_MODE_MAX_DAYS;
+          return (
+            <div key={i} style={S.timelineLegendItem}>
+              <span style={{ ...S.timelineDot, background: STAGE_COLOR(s.stage) }} />
+              <span style={S.timelineLegendStage}>{s.stage}</span>
+              <span style={S.timelineLegendDays}>{s.precise || s.ongoing ? '' : '~'}{s.days}d{s.ongoing ? ' (ongoing)' : ''}</span>
+              {drift && drift !== 'normal' && (
+                <span style={{ ...S.driftBadge, color: DRIFT_META[drift].color, borderColor: DRIFT_META[drift].color + '55', background: DRIFT_META[drift].color + '18' }}>
+                  {DRIFT_META[drift].label} — {stallMode
+                    ? `unchanged ${s.weeksSeen} uploads running`
+                    : `baseline ${DURATION_BASELINE[s.stage].min}-${DURATION_BASELINE[s.stage].max}d`}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Scans every house's most recent snapshot run to find ones currently running
+// long or stuck against DURATION_BASELINE. Pure client-side arithmetic on data
+// already loaded for Browse — no AI call, no extra backend round-trip.
+function findAttentionHouses(allRows) {
+  const byAddress = {};
+  allRows.forEach((r) => { (byAddress[r.address] = byAddress[r.address] || []).push(r); });
+  const results = [];
+  Object.entries(byAddress).forEach(([address, rows]) => {
+    const segments = buildTimeline(rows);
+    const last = segments[segments.length - 1];
+    if (!last || !last.ongoing) return;
+    const drift = classifyDrift(last.stage, last.days, last.weeksSeen);
+    if (drift === 'watch' || drift === 'stuck') {
+      const baseline = DURATION_BASELINE[last.stage];
+      const stallMode = baseline.max <= STALL_MODE_MAX_DAYS;
+      results.push({ address, stage: last.stage, days: last.days, weeksSeen: last.weeksSeen, drift, baseline, stallMode });
+    }
+  });
+  // Stuck-before-watch, then worst first within each — stall mode ranks by weeks
+  // unchanged (there's no meaningful day-count to rank it by), duration mode by
+  // how far past the baseline max it's run.
+  const severity = { stuck: 1, watch: 0 };
+  return results.sort((a, b) => {
+    if (severity[b.drift] !== severity[a.drift]) return severity[b.drift] - severity[a.drift];
+    const aOver = a.stallMode ? a.weeksSeen : a.days - a.baseline.max;
+    const bOver = b.stallMode ? b.weeksSeen : b.days - b.baseline.max;
+    return bOver - aOver;
+  });
+}
+
+function AttentionPanel({ allRows }) {
+  const houses = findAttentionHouses(allRows);
+  if (!houses.length) return null;
+  return (
+    <div style={S.attentionWrap}>
+      <div style={S.attentionTitle}>⚑ {houses.length} house{houses.length > 1 ? 's' : ''} not moving normally for their current stage</div>
+      <div style={S.attentionList}>
+        {houses.map((h, i) => (
+          <div key={i} style={S.attentionRow}>
+            <span style={S.attentionAddress}>{h.address}</span>
+            <span style={{ ...S.stagePill, background: STAGE_COLOR(h.stage) + '22', color: STAGE_COLOR(h.stage), borderColor: STAGE_COLOR(h.stage) + '55' }}>{h.stage}</span>
+            <span style={{ ...S.driftBadge, color: DRIFT_META[h.drift].color, borderColor: DRIFT_META[h.drift].color + '55', background: DRIFT_META[h.drift].color + '18' }}>
+              {DRIFT_META[h.drift].label} — {h.stallMode
+                ? `unchanged ${h.weeksSeen} uploads running`
+                : `${h.days}d (baseline ${h.baseline.min}-${h.baseline.max}d)`}
+            </span>
           </div>
         ))}
       </div>
@@ -461,6 +587,8 @@ function BrowseScreen({ allRows, loading, onAsk, asking, answer, answerError }) 
   return (
     <div>
       <AskBar onAsk={onAsk} asking={asking} answer={answer} answerError={answerError} />
+
+      {!loading && <AttentionPanel allRows={allRows} />}
 
       <div style={S.filterRow}>
         <input style={S.select} placeholder="Search address…" value={addressQuery} onChange={(e) => setAddressQuery(e.target.value)} />
@@ -832,6 +960,13 @@ const S = {
   timelineDot: { width: 8, height: 8, borderRadius: 2, flexShrink: 0 },
   timelineLegendStage: { color: '#d1d5db' },
   timelineLegendDays: { color: '#6b7280' },
+  driftBadge: { fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 3, border: '1px solid', whiteSpace: 'nowrap', marginLeft: 4 },
+
+  attentionWrap: { backgroundColor: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 8, padding: '14px 16px', marginBottom: 20 },
+  attentionTitle: { fontSize: 13, fontWeight: 700, color: '#f87171', marginBottom: 10 },
+  attentionList: { display: 'flex', flexDirection: 'column', gap: 8 },
+  attentionRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 },
+  attentionAddress: { color: '#f3f4f6', fontWeight: 500, minWidth: 140 },
 
   filterRow: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 },
   select: { backgroundColor: '#0f131b', border: '1px solid #232a38', borderRadius: 6, color: '#e5e7eb', padding: '8px 10px', fontSize: 12, fontFamily: "'DM Mono',monospace" },
