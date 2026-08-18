@@ -67,9 +67,6 @@ function checkDailyAiCap() {
 // ---------- Entry points ----------
 
 function doGet(e) {
-  if (e.parameter.action === 'debugToken') {
-    return respond({ raw: '[' + PropertiesService.getScriptProperties().getProperty('APP_TOKEN') + ']' });
-  }
   if (e.parameter.action === 'version') {
     return respond({ version: 'effort-fix-v2' });
   }
