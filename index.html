@@ -714,7 +714,7 @@ function WeekDetail({ weekDate, houses, onBack, onDelete, deleting }) {
 }
 
 function App() {
-  const [view, setView] = useState('upload'); // upload | review | weeks | weekDetail | browse
+  const [view, setView] = useState('browse'); // upload | review | weeks | weekDetail | browse
   const [parsed, setParsed] = useState(null);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -772,7 +772,7 @@ function App() {
     setAsking(false);
   };
 
-  useEffect(() => { if (configured) loadWeeks(); }, []);
+  useEffect(() => { if (configured) { loadWeeks(); loadAllRows(); } }, []);
 
   const handleFile = async (file) => {
     setBusy(true);
