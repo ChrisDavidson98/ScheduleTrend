@@ -389,12 +389,12 @@ Return ONLY a JSON object, no prose, no markdown fences:
 // schedules' own "Sub/Plan" column (e.g. "WH - Levi 2 - GE") — more reliable
 // than the street-name guess used for the weekly trim/paint/meter sheet,
 // since these documents state it outright. Any prefix not in this map is kept
-// as-is and flagged for verification rather than guessed at (e.g. "SBP",
-// seen on the Framing Schedule, isn't a known code yet).
+// as-is and flagged for verification rather than guessed at.
 const SUBDIVISION_PREFIXES = {
   'WH': 'Woodland Hills',
   'CL': 'Canyon Lakes',
   'PF': 'Prairie Farms',
+  'SBP': 'Stonebridge Point',
 };
 
 function resolveSubdivisionPrefix(prefix) {

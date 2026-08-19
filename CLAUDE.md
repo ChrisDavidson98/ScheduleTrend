@@ -90,8 +90,9 @@ conflict.
   permit-hold) → certificate of occupancy (required for lender funding/closing).
   Passing gas/electrical inspection is a prerequisite for utility meter installs.
 - **Superintendent-to-neighborhood map:** Chris → Woodland Hills + Ranch Villas of
-  Prairie Farms; Jason → Prairie Farms (distinct despite similar name); Jack →
-  Canyon Lakes; Ashton → multifamily (only sometimes on the shared sheet).
+  Prairie Farms; Jason → Prairie Farms (distinct despite similar name) + Stonebridge
+  Point (SBP); Jack → Canyon Lakes; Ashton → multifamily (only sometimes on the
+  shared sheet).
 - **Culture norm:** a job "sitting" with no schedule movement must always have an
   explainable reason.
 - **Vendor trust dynamic:** some trades pad/misstate timelines (counter-adjust
