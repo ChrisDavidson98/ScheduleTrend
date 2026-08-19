@@ -45,10 +45,19 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby7xpkt_RLdH2d7JNBbD
 const APP_TOKEN = 'ShWjnQPio2zyBKiz8qf5YOmUQ-DD1nnq3QWeFCZDv50';
 // ════════════════════════════════════════════════════════════════
 
+// Furthest-along first. Roof onward (down to here) comes from the weekly
+// trim/paint/meter PDF; everything after Roof comes from the Framing Schedule
+// (Current/Next/Upcoming/On Deck — framing's own internal mini-pipeline, its
+// "Completed" column IS Roof, not a separate stage) and the Foundation
+// Schedule (WFF down to Staked/Applied — that schedule's own column-group
+// names, used as-is; "WFF" meaning is unconfirmed, kept literal rather than
+// guessed at).
 const STAGE_ORDER = [
   'HOLD PAINT', 'Paint Ready/Painting', "Trimm'd", 'Triming', 'Trim Ready-HOLD', 'Trim Rdy',
   "Tape'g", 'Hung', 'Batts', 'RI Passed', 'ReRI Inspect', 'RI Inspect',
   'E-Mech', 'Furdown', 'P-Mech', 'M-Mech', 'Roof',
+  'Current', "Next (Window RO's)", 'Upcoming (Add T)', 'On Deck',
+  'WFF', 'Walls, Waterproofing, Backfilled, Ground Rough', 'Dug/Footing', 'Staked/Applied',
 ];
 
 // Per-stage duration reference (min/typical/max, in business days), learned from
@@ -256,7 +265,17 @@ function FlagBanner({ houses }) {
   );
 }
 
-function DropZone({ onFile, busy }) {
+// Which backend action to call, and what to show, per document type — the
+// three schedules parse completely differently (kanban-style column-groups
+// for Foundation, crew-grouped mini-pipeline for Framing, flat per-house rows
+// for Trim/Paint/Meter), so the frontend needs to know which one it's got.
+const SCHEDULE_TYPES = [
+  { key: 'trimPaintMeter', label: 'Trim/Paint/Meter', action: 'parseWeek' },
+  { key: 'foundation', label: 'Foundation', action: 'parseFoundationSchedule' },
+  { key: 'framing', label: 'Framing', action: 'parseFramingSchedule' },
+];
+
+function DropZone({ onFile, busy, scheduleType, onScheduleTypeChange }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
 
@@ -266,6 +285,13 @@ function DropZone({ onFile, busy }) {
   };
 
   return (
+    <div>
+    <div style={S.scheduleTypeRow}>
+      {SCHEDULE_TYPES.map((t) => (
+        <button key={t.key} style={scheduleType === t.key ? S.scheduleTypeBtnActive : S.scheduleTypeBtn}
+          disabled={busy} onClick={() => onScheduleTypeChange(t.key)}>{t.label}</button>
+      ))}
+    </div>
     <div
       style={{ ...S.drop, ...(dragging ? S.dropActive : {}), ...(busy ? S.dropBusy : {}) }}
       onDragOver={(e) => { e.preventDefault(); if (!busy) setDragging(true); }}
@@ -278,6 +304,7 @@ function DropZone({ onFile, busy }) {
       <div style={S.dropIcon}>{busy ? '···' : '⇩'}</div>
       <div style={S.dropTitle}>{busy ? 'Reading the schedule…' : 'Drop this week\u2019s schedule PDF'}</div>
       <div style={S.dropSub}>{busy ? 'This can take a few seconds' : 'or tap to browse — one page at a time'}</div>
+    </div>
     </div>
   );
 }
@@ -823,6 +850,7 @@ function App() {
   const [view, setView] = useState('browse'); // upload | review | weeks | weekDetail | browse
   const [parsed, setParsed] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [scheduleType, setScheduleType] = useState('trimPaintMeter');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
@@ -885,7 +913,8 @@ function App() {
     setError(null);
     try {
       const base64 = await fileToBase64(file);
-      const result = await callBackendPost('parseWeek', { pdfBase64: base64 });
+      const action = (SCHEDULE_TYPES.find((t) => t.key === scheduleType) || SCHEDULE_TYPES[0]).action;
+      const result = await callBackendPost(action, { pdfBase64: base64 });
       setParsed(result);
       setView('review');
     } catch (e) {
@@ -963,7 +992,7 @@ function App() {
       <div style={S.body}>
         {error && <div style={S.errorBox}>{error} <span style={S.errorDismiss} onClick={() => setError(null)}>✕</span></div>}
 
-        {view === 'upload' && <DropZone onFile={handleFile} busy={busy} />}
+        {view === 'upload' && <DropZone onFile={handleFile} busy={busy} scheduleType={scheduleType} onScheduleTypeChange={setScheduleType} />}
 
         {view === 'review' && parsed && (
           <ReviewScreen parsed={parsed} saving={saving}
@@ -1005,6 +1034,9 @@ const S = {
   dropIcon: { fontSize: 30, color: '#5c7a99', marginBottom: 10 },
   dropTitle: { fontSize: 15, color: '#e5e7eb', fontWeight: 500, marginBottom: 4 },
   dropSub: { fontSize: 11, color: '#6b7280', letterSpacing: '0.04em' },
+  scheduleTypeRow: { display: 'flex', gap: 6, marginBottom: 4 },
+  scheduleTypeBtn: { background: 'none', border: '1px solid #232a38', color: '#6b7280', padding: '7px 14px', borderRadius: 4, fontSize: 10, letterSpacing: '0.06em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
+  scheduleTypeBtnActive: { background: 'none', border: '1px solid #5c7a99', color: '#5c7a99', backgroundColor: 'rgba(92,122,153,0.1)', padding: '7px 14px', borderRadius: 4, fontSize: 10, letterSpacing: '0.06em', cursor: 'pointer', fontFamily: "'DM Mono',monospace" },
 
   banner: { backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: '#fbbf24', marginBottom: 16, lineHeight: 1.6 },
   errorBox: { backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 6, padding: '10px 14px', fontSize: 12, marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 10 },

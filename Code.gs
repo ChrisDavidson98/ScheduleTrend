@@ -32,11 +32,19 @@ const SNAPSHOTS_SHEET = 'Snapshots';
 const CLAUDE_MODEL = 'claude-sonnet-5';
 
 // Canonical stage order, furthest-along first — matches how the sheet itself
-// is laid out top (most complete) to bottom (least far along).
+// is laid out top (most complete) to bottom (least far along). Roof onward
+// (down to here) comes from the weekly trim/paint/meter PDF; everything after
+// Roof comes from the Framing Schedule (Current/Next/Upcoming/On Deck —
+// framing's own internal mini-pipeline; its "Completed" column IS Roof, not a
+// separate stage) and the Foundation Schedule (WFF down to Staked/Applied —
+// that schedule's own column-group names, used as-is; "WFF" meaning is
+// unconfirmed, kept literal rather than guessed at).
 const STAGE_ORDER = [
   'HOLD PAINT', 'Paint Ready/Painting', "Trimm'd", 'Triming', 'Trim Ready-HOLD', 'Trim Rdy',
   "Tape'g", 'Hung', 'Batts', 'RI Passed', 'ReRI Inspect', 'RI Inspect',
   'E-Mech', 'Furdown', 'P-Mech', 'M-Mech', 'Roof',
+  'Current', "Next (Window RO's)", 'Upcoming (Add T)', 'On Deck',
+  'WFF', 'Walls, Waterproofing, Backfilled, Ground Rough', 'Dug/Footing', 'Staked/Applied',
 ];
 
 // ---------- Rate limiting (same pattern as Scope Deviation backend) ----------
@@ -92,6 +100,16 @@ function doPost(e) {
       checkRateLimit('ai', RATE_LIMIT_MAX_AI);
       checkDailyAiCap();
       return respond(parseWeek(body.pdfBase64));
+    }
+    if (action === 'parseFoundationSchedule') {
+      checkRateLimit('ai', RATE_LIMIT_MAX_AI);
+      checkDailyAiCap();
+      return respond(parseFoundationSchedule(body.pdfBase64));
+    }
+    if (action === 'parseFramingSchedule') {
+      checkRateLimit('ai', RATE_LIMIT_MAX_AI);
+      checkDailyAiCap();
+      return respond(parseFramingSchedule(body.pdfBase64));
     }
     if (action === 'saveWeek') {
       checkRateLimit('write', RATE_LIMIT_MAX_WRITES);
@@ -361,4 +379,99 @@ Return ONLY a JSON object, no prose, no markdown fences:
 {"weekDate": "YYYY-MM-DD", "houses": [{"address": string, "note": string or omit, "stage": string, "statusDate": "YYYY-MM-DD" or omit, "matlArrivalDate": "YYYY-MM-DD" or omit, "matl": string or omit, "labor": string or omit, "notes": string or omit}]}`;
 
   return callClaudeWithPdf(system, pdfBase64);
+}
+
+// Recognized subdivision prefixes, as they appear directly in these two
+// schedules' own "Sub/Plan" column (e.g. "WH - Levi 2 - GE") — more reliable
+// than the street-name guess used for the weekly trim/paint/meter sheet,
+// since these documents state it outright. Any prefix not in this map is kept
+// as-is and flagged for verification rather than guessed at (e.g. "SBP",
+// seen on the Framing Schedule, isn't a known code yet).
+const SUBDIVISION_PREFIXES = {
+  'WH': 'Woodland Hills',
+  'CL': 'Canyon Lakes',
+  'PF': 'Prairie Farms',
+};
+
+function resolveSubdivisionPrefix(prefix) {
+  if (!prefix) return { subdivision: '', flag: '' };
+  const known = SUBDIVISION_PREFIXES[prefix.toUpperCase()];
+  if (known) return { subdivision: known, flag: '' };
+  return { subdivision: prefix, flag: 'unrecognized subdivision code "' + prefix + '" — verify' };
+}
+
+function parseFoundationSchedule(pdfBase64) {
+  const system = `You are helping a residential home builder superintendent turn a weekly Foundation Schedule PDF into clean structured data, one record per house, plus the schedule's own date.
+
+FORMAT — this document is laid out completely differently from a normal per-house list. It's organized as several COLUMN-GROUPS side by side, one column-group per foundation stage, each with its own "Address | Sub/Plan | Lot" sub-columns. A house is listed under whichever column-group matches its CURRENT stage. The exact column-group headers (use as literal stage names, do not rename or reinterpret them):
+  "Staked/Applied" (may appear with a "Permits" / "**ORDER TEMP POWER" sub-label — that sub-label is a process reminder, not part of the stage name or a separate field)
+  "Dug/Footing" (may appear with a "TEMP PWR/Order Windows" sub-label — same, ignore as page furniture)
+  "Walls, Waterproofing, Backfilled, Ground Rough"
+  "WFF" (may appear with a "**ORDER GAS LINES" sub-label — same, ignore)
+These four, in this exact spelling, are the only valid values for "stage". If a column-group header you see doesn't match one of these, keep it exactly as written and add "unrecognized stage — verify" to notes.
+
+WHAT TO SKIP:
+- Any row whose address is literally "SH / Duplex" (or similar placeholder text) with only a lot number and no real street address — these are pre-address multi-unit lots (duplex/fourplex/etc.) that don't get tracked until they have an actual street address. Omit them from the output entirely.
+- The "ADD TO SEWER LIST" banner, column headers, and any other page furniture — not house data.
+- Cell background color/highlighting (e.g. a pink-shaded address) — this does NOT indicate anything you should capture; ignore it completely, it's unrelated to construction stage.
+
+PER-HOUSE FIELDS:
+- "address": the street address exactly as written (e.g. "19645 W 114 St").
+- "subdivisionPrefix": the short code prefix from the Sub/Plan column, BEFORE the " - " separator (e.g. from "WH - Levi 2 - GE", the prefix is "WH"; from "PF - Levi 2 - Alt Porch", it's "PF"). Just the prefix — the code that maps it to a real subdivision name happens outside this parsing step.
+- "stage": one of the four column-group headers listed above, exactly as spelled there.
+- "notes": include the Lot number and the rest of the Sub/Plan text (the house model, e.g. "Levi 2 - Alt Porch") here as short reference info, e.g. "Lot 349 — Levi 2 - Alt Porch". Omit if genuinely nothing to note.
+- Leave "statusDate", "matlArrivalDate", "matl", and "labor" out entirely — this document doesn't contain per-house dates or labor/material info, don't guess at any.
+
+DATE: the document has "Meeting Date" near the top — extract it as "weekDate" in YYYY-MM-DD format at the top level of your response.
+
+Return ONLY a JSON object, no prose, no markdown fences:
+{"weekDate": "YYYY-MM-DD", "houses": [{"address": string, "subdivisionPrefix": string or omit, "stage": string, "notes": string or omit}]}`;
+
+  const parsed = callClaudeWithPdf(system, pdfBase64);
+  (parsed.houses || []).forEach((h) => {
+    const resolved = resolveSubdivisionPrefix(h.subdivisionPrefix);
+    h.subdivision = resolved.subdivision;
+    if (resolved.flag) h.notes = h.notes ? h.notes + '; ' + resolved.flag : resolved.flag;
+    delete h.subdivisionPrefix;
+  });
+  return parsed;
+}
+
+function parseFramingSchedule(pdfBase64) {
+  const system = `You are helping a residential home builder superintendent turn a weekly Framing Schedule PDF into clean structured data, one record per house, plus the schedule's own date.
+
+FORMAT — this document is organized by FRAMING CREW, not as a flat house list. Each crew has a labeled row-pair (an address row, then a Sub/Plan row directly below it) repeated across 5 columns representing that crew's own internal framing pipeline, ordered MOST progressed (left) to LEAST progressed (right):
+  "Completed (Roof)" — framing is done, house has its roof on. Map this to stage "Roof" (not "Completed" — this is the same Roof stage the weekly trim/paint/meter schedule also tracks, not a separate one).
+  "Current" — the crew is actively framing this house right now. Map to stage "Current".
+  "Next - (Window RO's)" — map to stage "Next (Window RO's)".
+  "Upcoming (Add T)" — map to stage "Upcoming (Add T)".
+  "On Deck" — map to stage "On Deck".
+A single crew can have MULTIPLE houses in the same column simultaneously (e.g. two different "On Deck" addresses for one crew) — capture every address you see, not just one per column.
+
+WHAT TO SKIP:
+- The crew/framer name itself (e.g. "Mark Z", "Jose #1") — not needed, don't capture it.
+- The "Plans" column on the right (things like "SOLD", "No Flatwork") — these are tracked elsewhere already, not part of this data.
+- Cell background highlighting (light blue, red, etc. on some addresses) — do NOT capture or interpret this, it's unrelated to construction stage.
+- Any footer notes like "Truss Drawings & As-Builts?" — a general reminder, not house data.
+
+PER-HOUSE FIELDS:
+- "address": the street address exactly as written.
+- "subdivisionPrefix": the short code prefix from the Sub/Plan row directly below the address, BEFORE the " - " separator (e.g. from "WH - Sydney 3", the prefix is "WH"; from "SBP - Harlow 5 - P", it's "SBP"). Capture whatever prefix is actually there, even if unfamiliar — do not guess or normalize it yourself.
+- "stage": one of "Roof", "Current", "Next (Window RO's)", "Upcoming (Add T)", "On Deck" per the mapping above.
+- "notes": the rest of the Sub/Plan text (house model) as short reference info, e.g. "Sydney 3". Omit if nothing to note.
+- Leave "statusDate", "matlArrivalDate", "matl", and "labor" out entirely — this document doesn't track those per house, don't guess at any.
+
+DATE: the document has "Meeting Date" near the top — extract it as "weekDate" in YYYY-MM-DD format at the top level of your response.
+
+Return ONLY a JSON object, no prose, no markdown fences:
+{"weekDate": "YYYY-MM-DD", "houses": [{"address": string, "subdivisionPrefix": string or omit, "stage": string, "notes": string or omit}]}`;
+
+  const parsed = callClaudeWithPdf(system, pdfBase64);
+  (parsed.houses || []).forEach((h) => {
+    const resolved = resolveSubdivisionPrefix(h.subdivisionPrefix);
+    h.subdivision = resolved.subdivision;
+    if (resolved.flag) h.notes = h.notes ? h.notes + '; ' + resolved.flag : resolved.flag;
+    delete h.subdivisionPrefix;
+  });
+  return parsed;
 }
