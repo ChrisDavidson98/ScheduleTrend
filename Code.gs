@@ -206,11 +206,15 @@ function lookupSubdivision(address) {
 
 function saveWeek(weekDate, houses) {
   const sheet = getSheet();
-  // Remove any existing rows for this week first, so re-uploading a
-  // corrected week overwrites rather than duplicates.
+  // Remove existing rows for this week+address so re-uploading a corrected
+  // schedule overwrites its own houses without touching other schedule
+  // types (Foundation/Framing/Trim-Paint-Meter) uploaded for the same week.
+  const incomingAddresses = new Set(houses.map((h) => h.address || ''));
   const values = sheet.getDataRange().getValues();
   for (let i = values.length - 1; i >= 1; i--) {
-    if (normalizeDate(values[i][0]) === weekDate) sheet.deleteRow(i + 1);
+    if (normalizeDate(values[i][0]) === weekDate && incomingAddresses.has(values[i][1])) {
+      sheet.deleteRow(i + 1);
+    }
   }
   houses.forEach((h) => {
     sheet.appendRow([
