@@ -130,10 +130,9 @@ implementation; PunchTrack and BuildTrackUnified's milestone backend should be
 brought up to this standard, not the other way around.
 
 The `debugToken` action that used to leak `APP_TOKEN` in plaintext with no auth
-check has been removed from `Code.gs` (2026-08-18). **`APP_TOKEN` still needs to be
-rotated in Script Properties and the live Apps Script deployment updated with the
-fixed code** — treat the old token as compromised until that's done. See chat for
-exact steps and a generated replacement value.
+check has been removed from `Code.gs` (2026-08-18). `APP_TOKEN` has since been
+rotated in Script Properties, the fixed `Code.gs` redeployed, and `index.html`
+updated to match (2026-08-18, commit `dc8345e`) — resolved, old token is dead.
 
 ### Design direction
 See `DESIGN.md` in this repo for the long-term visual/UX direction for the future
