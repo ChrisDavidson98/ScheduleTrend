@@ -532,14 +532,42 @@ function HouseTimeline({ address, rows }) {
   );
 }
 
-// Scans every house's most recent snapshot run to find ones currently running
-// long or stuck against DURATION_BASELINE. Pure client-side arithmetic on data
-// already loaded for Browse — no AI call, no extra backend round-trip.
-function findAttentionHouses(allRows) {
+function getGlobalWeeks(allRows) {
+  return Array.from(new Set(allRows.map((r) => r.weekDate))).sort();
+}
+
+// Paint Ready/Painting is the last stage this tool tracks (nothing past it
+// comes from the Trim/Paint/Meter PDF) — so a house that was there last week
+// and is simply absent from this week's upload has run its course, not
+// stalled. Per Chris: this is a one-time terminal read, not a live-tracked
+// stage — once flagged complete it's excluded from attention/drift entirely
+// rather than being watched for staying "stagnant" the way an active stage is.
+function findCompletedPaintHouses(allRows) {
+  const globalWeeks = getGlobalWeeks(allRows);
   const byAddress = {};
   allRows.forEach((r) => { (byAddress[r.address] = byAddress[r.address] || []).push(r); });
   const results = [];
   Object.entries(byAddress).forEach(([address, rows]) => {
+    const sorted = [...rows].sort((a, b) => a.weekDate.localeCompare(b.weekDate));
+    const last = sorted[sorted.length - 1];
+    if (last.stage !== 'Paint Ready/Painting') return;
+    const nextWeek = globalWeeks.find((w) => w > last.weekDate);
+    if (!nextWeek) return; // no upload yet since its last appearance — still active, don't guess
+    results.push({ address, lastSeenWeek: last.weekDate, completedWeek: nextWeek });
+  });
+  return results.sort((a, b) => b.completedWeek.localeCompare(a.completedWeek));
+}
+
+// Scans every house's most recent snapshot run to find ones currently running
+// long or stuck against DURATION_BASELINE. Pure client-side arithmetic on data
+// already loaded for Browse — no AI call, no extra backend round-trip.
+function findAttentionHouses(allRows) {
+  const completedAddresses = new Set(findCompletedPaintHouses(allRows).map((h) => h.address));
+  const byAddress = {};
+  allRows.forEach((r) => { (byAddress[r.address] = byAddress[r.address] || []).push(r); });
+  const results = [];
+  Object.entries(byAddress).forEach(([address, rows]) => {
+    if (completedAddresses.has(address)) return;
     const segments = buildTimeline(rows);
     const last = segments[segments.length - 1];
     if (!last || !last.ongoing) return;
@@ -585,6 +613,24 @@ function AttentionPanel({ allRows }) {
   );
 }
 
+function CompletedPaintPanel({ allRows }) {
+  const houses = findCompletedPaintHouses(allRows);
+  if (!houses.length) return null;
+  return (
+    <div style={S.completedWrap}>
+      <div style={S.completedTitle}>✓ {houses.length} house{houses.length > 1 ? 's' : ''} completed paint</div>
+      <div style={S.attentionList}>
+        {houses.map((h, i) => (
+          <div key={i} style={S.attentionRow}>
+            <span style={S.attentionAddress}>{h.address}</span>
+            <span style={S.completedDate}>Paint completed — {fmtDate(h.completedWeek) || h.completedWeek}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function BrowseScreen({ allRows, loading, onAsk, asking, answer, answerError }) {
   const [subdivision, setSubdivision] = useState('');
   const [superintendent, setSuperintendent] = useState('');
@@ -616,6 +662,7 @@ function BrowseScreen({ allRows, loading, onAsk, asking, answer, answerError }) 
       <AskBar onAsk={onAsk} asking={asking} answer={answer} answerError={answerError} />
 
       {!loading && <AttentionPanel allRows={allRows} />}
+      {!loading && <CompletedPaintPanel allRows={allRows} />}
 
       <div style={S.filterRow}>
         <input style={S.select} placeholder="Search address…" value={addressQuery} onChange={(e) => setAddressQuery(e.target.value)} />
@@ -1111,6 +1158,9 @@ const S = {
   attentionList: { display: 'flex', flexDirection: 'column', gap: 8 },
   attentionRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 },
   attentionAddress: { color: '#f3f4f6', fontWeight: 500, minWidth: 140 },
+  completedWrap: { backgroundColor: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.2)', borderRadius: 8, padding: '14px 16px', marginBottom: 20 },
+  completedTitle: { fontSize: 13, fontWeight: 700, color: '#4ade80', marginBottom: 10 },
+  completedDate: { fontSize: 11, fontWeight: 600, color: '#4ade80' },
 
   gridCurrentCol: { backgroundColor: 'rgba(92,122,153,0.06)' },
   gridReorderCell: { padding: '4px 2px', textAlign: 'center' },
