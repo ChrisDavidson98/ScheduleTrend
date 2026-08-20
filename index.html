@@ -781,7 +781,10 @@ function GridScreen({ allRows }) {
     }
   }, [allRows.length]);
 
-  const weeks = Array.from(new Set(rows.map((r) => r.weekDate))).sort().slice(-5);
+  // Newest first (left, next to the address) so the current status is
+  // visible without scrolling on a narrow iPad screen; oldest trails off
+  // to the right.
+  const weeks = Array.from(new Set(rows.map((r) => r.weekDate))).sort().slice(-4).reverse();
 
   const setOrder = (next) => { setOrderState(next); saveGridOrder(next); };
   const moveRow = (address, dir) => {
@@ -805,7 +808,7 @@ function GridScreen({ allRows }) {
             <th style={S.th}></th>
             <th style={S.th}>Address</th>
             {weeks.map((w, i) => (
-              <th key={w} style={{ ...S.th, textAlign: 'center', ...(i === weeks.length - 1 ? S.gridCurrentCol : {}) }}>{fmtDate(w) || w}</th>
+              <th key={w} style={{ ...S.th, textAlign: 'center', ...(i === 0 ? S.gridCurrentCol : {}) }}>{fmtDate(w) || w}</th>
             ))}
           </tr>
         </thead>
@@ -824,7 +827,7 @@ function GridScreen({ allRows }) {
                 <td style={S.td}>{address}</td>
                 {weeks.map((w, i) => {
                   const cell = addressRows.find((r) => r.weekDate === w);
-                  const isCurrent = i === weeks.length - 1;
+                  const isCurrent = i === 0;
                   return (
                     <td key={w} style={{ ...S.td, textAlign: 'center', ...(isCurrent ? S.gridCurrentCol : {}) }}>
                       {cell ? (
